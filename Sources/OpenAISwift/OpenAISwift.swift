@@ -20,17 +20,21 @@ final public class OpenAI: OpenAIProtocol {
         /// Optional OpenAI organization identifier. See https://platform.openai.com/docs/api-reference/authentication
         public let organizationIdentifier: String?
         
-        /// API host. Set this property if you use some kind of proxy or your own server. Default is api.openai.com
-        public let host: String
-        
         /// Default request timeout
         public let timeoutInterval: TimeInterval
         
-        public init(token: String, organizationIdentifier: String? = nil, host: String = "api.openai.com", timeoutInterval: TimeInterval = 60.0) {
+        /// API host. Set this property if you use some kind of proxy or your own server. Default is api.openai.com
+        public let host: String
+        
+        /// Full custom URL
+        public let fullEndpoint: String
+        
+        public init(token: String, organizationIdentifier: String? = nil, timeoutInterval: TimeInterval = 30.0, host: String, fullEndpoint: String) {
             self.token = token
             self.organizationIdentifier = organizationIdentifier
-            self.host = host
+            self.host = host.isEmpty ? "api.openai.com" : host
             self.timeoutInterval = timeoutInterval
+            self.fullEndpoint = fullEndpoint
         }
     }
     
@@ -39,8 +43,8 @@ final public class OpenAI: OpenAIProtocol {
     
     public let configuration: Configuration
 
-    public convenience init(apiToken: String) {
-        self.init(configuration: Configuration(token: apiToken), session: URLSession.shared)
+    public convenience init(apiToken: String, host: String, fullEndpoint: String) {
+        self.init(configuration: Configuration(token: apiToken, host: host, fullEndpoint: fullEndpoint), session: URLSession.shared)
     }
     
     public convenience init(configuration: Configuration) {
@@ -168,10 +172,14 @@ extension OpenAI {
 extension OpenAI {
     
     func buildURL(path: String) -> URL {
+        if !configuration.fullEndpoint.isEmpty {
+            return URL(string: configuration.fullEndpoint)!
+        }
         var components = URLComponents()
         components.scheme = "https"
         components.host = configuration.host
         components.path = path
+        if configuration.host == "openrouter.ai" { components.path = "/api\(components.path)"}
         return components.url!
     }
 }
