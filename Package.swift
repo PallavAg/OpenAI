@@ -4,18 +4,15 @@
 import PackageDescription
 
 let package = Package(
-    name: "OpenAI",
+    name: "OpenAISwift",
     products: [
         .library(
-            name: "OpenAI",
-            targets: ["OpenAI"]),
+            name: "OpenAISwift",
+            targets: ["OpenAISwift"]),
     ],
     targets: [
         .target(
-            name: "OpenAI",
+            name: "OpenAISwift",
             dependencies: []),
-        .testTarget(
-            name: "OpenAITests",
-            dependencies: ["OpenAI"]),
     ]
 )
