@@ -1,6 +1,5 @@
 //
 //  StreamingSession.swift
-//  
 //
 //  Created by Sergii Kryvoblotskyi on 18/04/2023.
 //
@@ -24,60 +23,94 @@ final class StreamingSession<ResultType: Codable>: NSObject, Identifiable, URLSe
     private let streamingCompletionMarker = "[DONE]"
     private let urlRequest: URLRequest
     private lazy var urlSession: URLSession = {
-        let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-        return session
+        URLSession(configuration: .default, delegate: self, delegateQueue: nil)
     }()
+    
+    /// Buffer to store a potential partial JSON chunk.
+    private var prevChunkBuffer = ""
     
     init(urlRequest: URLRequest) {
         self.urlRequest = urlRequest
     }
     
     func perform() {
-        self.urlSession
-            .dataTask(with: self.urlRequest)
-            .resume()
+        urlSession.dataTask(with: urlRequest).resume()
     }
     
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // If there's any leftover (partial) JSON in the buffer, return it as an error response.
+        if !prevChunkBuffer.isEmpty {
+            let errorResponse = APIErrorResponse(
+                error: APIError(
+                    message: "```\n\(prevChunkBuffer)\n```",
+                    type: "PartialBufferError",
+                    param: nil,
+                    code: nil
+                )
+            )
+            onProcessingError?(self, errorResponse)
+            prevChunkBuffer = ""
+        }
         onComplete?(self, error)
     }
     
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let stringContent = String(data: data, encoding: .utf8) else {
+        // Convert data to string and remove any unwanted content.
+        guard let rawContent = String(data: data, encoding: .utf8) else {
             onProcessingError?(self, StreamingError.unknownContent)
             return
         }
-        let jsonObjects = stringContent
+        
+        let stringContent = rawContent.replacingOccurrences(of: ": OPENROUTER PROCESSING", with: "")
+        let combinedContent = prevChunkBuffer + stringContent
+        let jsonObjects = combinedContent
             .components(separatedBy: "data:")
-            .filter { $0.isEmpty == false }
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        guard jsonObjects.isEmpty == false, jsonObjects.first != streamingCompletionMarker else {
+            .filter { !$0.isEmpty }
+        
+        // Reset the partial buffer. Any new partial JSON will be added later if needed.
+        prevChunkBuffer = ""
+        
+        // If there are no relevant JSON objects or the first object indicates completion, do nothing.
+        guard !jsonObjects.isEmpty, jsonObjects.first != streamingCompletionMarker else {
             return
         }
-        jsonObjects.forEach { jsonContent  in
-            guard jsonContent != streamingCompletionMarker else {
-                return
-            }
-            guard let jsonData = jsonContent.data(using: .utf8) else {
-                onProcessingError?(self, StreamingError.unknownContent)
-                return
+        
+        for (index, jsonContent) in jsonObjects.enumerated() {
+            if jsonContent == streamingCompletionMarker {
+                continue
             }
             
-            var apiError: Error? = nil
+            guard let jsonData = jsonContent.data(using: .utf8) else {
+                print("Error: Unable to convert jsonContent to Data\nContent: \(jsonContent)")
+                onProcessingError?(self, StreamingError.unknownContent)
+                continue
+            }
+            
             do {
-                let decoder = JSONDecoder()
-                let object = try decoder.decode(ResultType.self, from: jsonData)
+                // Try decoding the expected ResultType.
+                let object = try JSONDecoder().decode(ResultType.self, from: jsonData)
                 onReceiveContent?(self, object)
             } catch {
-                apiError = error
-            }
-            
-            if let apiError = apiError {
-                do {
-                    let decoded = try JSONDecoder().decode(APIErrorResponse.self, from: jsonData)
-                    onProcessingError?(self, decoded)
-                } catch {
-                    onProcessingError?(self, apiError)
+                // If decoding as ResultType fails, try decoding as an API error response.
+                if let apiErrorResponse = try? JSONDecoder().decode(APIErrorResponse.self, from: jsonData) {
+                    onProcessingError?(self, apiErrorResponse)
+                } else {
+                    // For the last JSON component, if it does not seem complete (e.g. missing a closing brace), store it in the buffer.
+                    if index == jsonObjects.count - 1 &&
+                        !jsonContent.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("}") {
+                        prevChunkBuffer = "data: \(jsonContent)"
+                    } else if !jsonContent.hasPrefix("{\"choices") {
+                        // Log the error and report using a custom error (make sure APIErrorResponse/APIError are defined).
+                        print("Error processing JSON content:\n\(jsonContent)")
+                        let customError = APIErrorResponse(
+                            error: APIError(message: jsonContent,
+                                            type: "Error",
+                                            param: nil,
+                                            code: nil)
+                        )
+                        onProcessingError?(self, customError)
+                    }
                 }
             }
         }

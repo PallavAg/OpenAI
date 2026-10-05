@@ -14,6 +14,7 @@ public struct Chat: Codable, Equatable {
     /// The name of the author of this message. `name` is required if role is `function`, and it should be the name of the function whose response is in the `content`. May contain a-z, A-Z, 0-9, and underscores, with a maximum length of 64 characters.
     public let name: String?
     public let functionCall: ChatFunctionCall?
+    public let reasoningContent: String?
     
     public enum Role: String, Codable, Equatable {
         case system
@@ -27,13 +28,15 @@ public struct Chat: Codable, Equatable {
         case content
         case name
         case functionCall = "function_call"
+        case reasoningContent = "reasoning_content"
     }
     
-    public init(role: Role, content: String? = nil, name: String? = nil, functionCall: ChatFunctionCall? = nil) {
+    public init(role: Role, content: String? = nil, name: String? = nil, functionCall: ChatFunctionCall? = nil, reasoningContent: String? = nil) {
         self.role = role
         self.content = content
         self.name = name
         self.functionCall = functionCall
+        self.reasoningContent = reasoningContent
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -46,6 +49,9 @@ public struct Chat: Codable, Equatable {
 
         if let functionCall = functionCall {
             try container.encode(functionCall, forKey: .functionCall)
+        }
+        if let reasoningContent {
+            try container.encode(reasoningContent, forKey: .reasoningContent)
         }
 
         // Should add 'nil' to 'content' property for function calling response
@@ -237,6 +243,17 @@ public struct ChatQuery: Equatable, Codable, Streamable {
     public let user: String?
     
     var stream: Bool = false
+    var reasoningEffort: String?
+    var isPrivate: Bool?
+    var thinking: Thinking?
+
+    public struct Thinking: Codable, Equatable {
+        public let type: String
+
+        public init(type: String) {
+            self.type = type
+        }
+    }
 
     public enum FunctionCall: Codable, Equatable {
         case none
@@ -273,6 +290,9 @@ public struct ChatQuery: Equatable, Codable, Streamable {
         case topP = "top_p"
         case n
         case stream
+        case reasoningEffort = "reasoning_effort"
+        case isPrivate = "private"
+        case thinking
         case stop
         case maxTokens = "max_tokens"
         case presencePenalty = "presence_penalty"
@@ -281,12 +301,15 @@ public struct ChatQuery: Equatable, Codable, Streamable {
         case user
     }
     
-  public init(model: Model, messages: [Chat], functions: [ChatFunctionDeclaration]? = nil, functionCall: FunctionCall? = nil, temperature: Double? = nil, topP: Double? = nil, n: Int? = nil, stop: [String]? = nil, maxTokens: Int? = nil, presencePenalty: Double? = nil, frequencyPenalty: Double? = nil, logitBias: [String : Int]? = nil, user: String? = nil, stream: Bool = false) {
+    public init(model: Model, messages: [Chat], functions: [ChatFunctionDeclaration]? = nil, functionCall: FunctionCall? = nil, temperature: Double? = nil, reasoningEffort: String?, isPrivate: Bool? = nil, thinking: Thinking? = nil, topP: Double? = nil, n: Int? = nil, stop: [String]? = nil, maxTokens: Int? = nil, presencePenalty: Double? = nil, frequencyPenalty: Double? = nil, logitBias: [String : Int]? = nil, user: String? = nil, stream: Bool = false) {
         self.model = model
         self.messages = messages
         self.functions = functions
         self.functionCall = functionCall
         self.temperature = temperature
+        self.reasoningEffort = reasoningEffort
+        self.isPrivate = isPrivate
+        self.thinking = thinking
         self.topP = topP
         self.n = n
         self.stop = stop

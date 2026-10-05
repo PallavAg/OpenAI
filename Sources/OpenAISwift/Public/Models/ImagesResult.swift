@@ -10,7 +10,10 @@ import Foundation
 public struct ImagesResult: Codable, Equatable {
     
     public struct URLResult: Codable, Equatable {
-        public let url: String
+        public let url: String?
+        public let b64_json: String?
+        public let revised_prompt: String?
+        
     }
     public let created: TimeInterval
     public let data: [URLResult]

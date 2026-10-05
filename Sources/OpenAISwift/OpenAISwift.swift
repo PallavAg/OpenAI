@@ -29,7 +29,7 @@ final public class OpenAI: OpenAIProtocol {
         /// Full custom URL
         public let fullEndpoint: String
         
-        public init(token: String, organizationIdentifier: String? = nil, timeoutInterval: TimeInterval = 30.0, host: String, fullEndpoint: String) {
+        public init(token: String, organizationIdentifier: String? = nil, timeoutInterval: TimeInterval = 600.0, host: String, fullEndpoint: String) {
             self.token = token
             self.organizationIdentifier = organizationIdentifier
             self.host = host.isEmpty ? "api.openai.com" : host
@@ -111,6 +111,12 @@ final public class OpenAI: OpenAIProtocol {
 
 extension OpenAI {
 
+    // Define a custom error type to wrap the response data as a string
+    struct DataStringError: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+    
     func performRequest<ResultType: Codable>(request: any URLRequestBuildable, completion: @escaping (Result<ResultType, Error>) -> Void) {
         do {
             let request = try request.build(token: configuration.token, organizationIdentifier: configuration.organizationIdentifier, timeoutInterval: configuration.timeoutInterval)
@@ -126,18 +132,22 @@ extension OpenAI {
 
                 var apiError: Error? = nil
                 do {
+                    // print(String(data: data, encoding: .utf8) ?? "Unable to decode data to string")
                     let decoded = try JSONDecoder().decode(ResultType.self, from: data)
                     completion(.success(decoded))
                 } catch {
+                    print("ERROR: \(error)")
                     apiError = error
                 }
 
-                if let apiError = apiError {
+                if apiError != nil {
                     do {
                         let decoded = try JSONDecoder().decode(APIErrorResponse.self, from: data)
                         completion(.failure(decoded))
                     } catch {
-                        completion(.failure(apiError))
+                        // Return the response data as a string inside a custom error
+                        let dataString = String(data: data, encoding: .utf8) ?? "Unable to decode data to string"
+                        completion(.failure(DataStringError(message: "```\n\(dataString)\n```")))
                     }
                 }
             }
@@ -172,15 +182,124 @@ extension OpenAI {
 extension OpenAI {
     
     func buildURL(path: String) -> URL {
-        if !configuration.fullEndpoint.isEmpty {
-            return URL(string: configuration.fullEndpoint)!
+        guard let url = OpenAIEndpointResolver.resolve(
+            hostOrBaseURL: configuration.host,
+            fullEndpoint: configuration.fullEndpoint,
+            requestedPath: path
+        ) else {
+            // URLSession reports an unsupported URL instead of crashing on malformed user input.
+            return URL(fileURLWithPath: "/invalid-openai-endpoint")
         }
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = configuration.host
-        components.path = path
-        if configuration.host == "openrouter.ai" { components.path = "/api\(components.path)"}
-        return components.url!
+
+        print("Sending to URL: \(url)")
+        return url
+    }
+
+}
+
+enum OpenAIEndpointResolver {
+    static func resolve(hostOrBaseURL: String, fullEndpoint: String, requestedPath: String) -> URL? {
+        let endpoint = fullEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !endpoint.isEmpty {
+            return components(for: endpoint)?.url
+        }
+
+        let baseURL = hostOrBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var components = components(for: baseURL),
+              let hostname = components.host?.lowercased(),
+              !hostname.isEmpty else {
+            return nil
+        }
+
+        let basePath = normalizedPath(components.path)
+        let endpointPath: String
+        if basePath.isEmpty {
+            endpointPath = providerSpecificPath(for: hostname, requestedPath: requestedPath)
+        } else {
+            endpointPath = requestedPath
+        }
+        components.path = appending(endpointPath, to: basePath)
+        return components.url
+    }
+
+    private static func components(for address: String) -> URLComponents? {
+        let address = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return nil }
+        if address.contains("://") {
+            return URLComponents(string: address)
+        }
+
+        return URLComponents(string: "\(defaultScheme(for: address))://\(address)")
+    }
+
+    private static func defaultScheme(for address: String) -> String {
+        guard let hostname = URLComponents(string: "scheme://\(address)")?.host else {
+            return "https"
+        }
+        return isLocalNetworkHost(hostname) ? "http" : "https"
+    }
+
+    private static func isLocalNetworkHost(_ hostname: String) -> Bool {
+        let hostname = hostname.lowercased()
+        if hostname == "localhost" || hostname.hasSuffix(".localhost") || hostname.hasSuffix(".local") {
+            return true
+        }
+
+        if hostname == "::1" || hostname.hasPrefix("fc") || hostname.hasPrefix("fd") || hostname.hasPrefix("fe8") || hostname.hasPrefix("fe9") || hostname.hasPrefix("fea") || hostname.hasPrefix("feb") {
+            return true
+        }
+
+        let octets = hostname.split(separator: ".").compactMap { Int($0) }
+        if octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) {
+            return octets[0] == 10 ||
+            octets[0] == 127 ||
+            (octets[0] == 169 && octets[1] == 254) ||
+            (octets[0] == 172 && (16...31).contains(octets[1])) ||
+            (octets[0] == 192 && octets[1] == 168)
+        }
+
+        return !hostname.contains(".")
+    }
+
+    private static func providerSpecificPath(for hostname: String, requestedPath: String) -> String {
+        switch hostname {
+        case "openrouter.ai":
+            return "/api\(normalizedPath(requestedPath))"
+        case "api.perplexity.ai":
+            return "/chat/completions"
+        case "api.groq.com":
+            return "/openai\(normalizedPath(requestedPath))"
+        case "text.pollinations.ai":
+            return "/openai"
+        default:
+            return requestedPath
+        }
+    }
+
+    private static func appending(_ requestedPath: String, to basePath: String) -> String {
+        let basePath = normalizedPath(basePath)
+        let requestedPath = normalizedPath(requestedPath)
+        guard !basePath.isEmpty else { return requestedPath }
+        guard !requestedPath.isEmpty else { return basePath }
+
+        if basePath == requestedPath || basePath.hasSuffix(requestedPath) {
+            return basePath
+        }
+
+        if requestedPath.hasPrefix("/v1/"), basePath == "/v1" || basePath.hasSuffix("/v1") {
+            return basePath + String(requestedPath.dropFirst(3))
+        }
+
+        return basePath + requestedPath
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        guard !path.isEmpty && path != "/" else { return "" }
+        var path = path.hasPrefix("/") ? path : "/\(path)"
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        return path
     }
 }
 
